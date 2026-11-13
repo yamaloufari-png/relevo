@@ -88,6 +88,11 @@
   .tbox{display:flex;align-items:center;gap:6px;margin-top:4px}
   .tbox input{width:76px;text-align:center;font-size:30px;font-weight:800;padding:8px;margin:0}
   .tbox span{font-size:30px;font-weight:800}
+  .geo{display:flex;gap:6px;margin-top:4px}
+  .geo input{margin:0}
+  .geo button{border:0;border-radius:12px;background:var(--blue);color:#fff;font-weight:800;padding:0 14px;font-size:16px}
+  .geoRes div{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-top:6px;font-size:14px;cursor:pointer}
+  .geoRes small{color:var(--muted)}
   .chatIn{display:flex;gap:6px}
   .chatIn input{margin:0}
   .chatIn button{border:0;border-radius:12px;background:var(--green);color:#06210f;font-weight:800;padding:0 14px;font-size:16px}
@@ -566,6 +571,29 @@ function bindTimeBox(id, get, set){
     H.value = pad(Math.floor(t/60)); M.value = pad(t % 60); leer();
   });
 }
+/* Buscar población o dirección (OpenStreetMap, gratis) */
+async function buscarSitio(q){
+  q = (q || "").trim();
+  const out = $("#geoRes");
+  if (q.length < 3){ toast("Escribe al menos 3 letras"); return; }
+  out.innerHTML = `<p class="note">Buscando…</p>`;
+  try{
+    const url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=es&accept-language=es&q=" + encodeURIComponent(q);
+    const r = await fetch(url, { headers: { "Accept": "application/json" } });
+    const data = await r.json();
+    if (!data.length){ out.innerHTML = `<p class="note">No lo encuentro. Prueba con calle y población, por ejemplo "Calle Mayor, Martorell".</p>`; return; }
+    out.innerHTML = data.map((d, i) => {
+      const partes = d.display_name.split(", ");
+      return `<div data-i="${i}"><b>${esc(partes.slice(0, 2).join(", "))}</b><br><small>${esc(partes.slice(2, 5).join(", "))}</small></div>`;
+    }).join("");
+    out.querySelectorAll("div").forEach(el => el.onclick = () => {
+      const d = data[+el.dataset.i], ll = { lat: +d.lat, lng: +d.lon };
+      moverBusqueda(ll); map.setView([ll.lat, ll.lng], 15);
+      out.innerHTML = ""; $("#geoQ").value = el.querySelector("b").textContent; $("#geoQ").blur();
+      toast("📍 Zona marcada: " + el.querySelector("b").textContent);
+    });
+  }catch(e){ console.warn(e); out.innerHTML = `<p class="note">No se pudo buscar. Revisa la conexión.</p>`; }
+}
 let searchCircle = null;
 function moverBusqueda(ll){
   buscando.lat = ll.lat; buscando.lng = ll.lng;
@@ -640,13 +668,18 @@ function render(force){
   // 0) Estoy eligiendo zona y hora para buscar
   if (buscando){
     s.innerHTML = `<h2>Busco plaza</h2>
-      <p><b>Toca el mapa</b> donde quieres aparcar (o arrastra el pin 🔍). El círculo azul es la zona donde buscaremos.</p>
+      <label>¿Dónde quieres aparcar?</label>
+      <div class="geo"><input id="geoQ" enterkeyhint="search" placeholder="Población o dirección (ej: Martorell)"><button id="geoBtn">🔎</button></div>
+      <div class="geoRes" id="geoRes"></div>
+      <p class="note" style="margin-top:6px">O <b>toca el mapa</b> en el sitio exacto. El círculo azul es la zona donde buscaremos.</p>
       <label>¿A qué hora necesitas aparcar?</label>
       ${timeBoxHTML("bHora", buscando.hora)}
       <p class="note" style="margin-top:6px">Verás los coches que salen a ${CONFIG.ZONA_KM} km o menos de ese punto, entre ${CONFIG.MARGEN_MIN} min antes y ${CONFIG.MARGEN_MIN} min después de esa hora.</p>
       <button class="btn green" id="bOk">Buscar</button>
       <button class="btn ghost" id="bCancel">Cancelar</button>`;
     bindTimeBox("bHora", () => buscando.hora, v => buscando.hora = v);
+    $("#geoBtn").onclick = () => buscarSitio($("#geoQ").value);
+    $("#geoQ").onkeydown = e => { if (e.key === "Enter") buscarSitio(e.target.value); };
     $("#bOk").onclick = aplicarBusqueda; $("#bCancel").onclick = endSearchEdit;
     return;
   }
