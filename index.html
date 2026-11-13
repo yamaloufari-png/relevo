@@ -85,6 +85,9 @@
   .msg small{display:block;font-size:11px;opacity:.7;margin-top:2px}
   .quick{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
   .quick span{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:6px 10px;font-size:13px;cursor:pointer}
+  .tbox{display:flex;align-items:center;gap:6px;margin-top:4px}
+  .tbox input{width:76px;text-align:center;font-size:30px;font-weight:800;padding:8px;margin:0}
+  .tbox span{font-size:30px;font-weight:800}
   .chatIn{display:flex;gap:6px}
   .chatIn input{margin:0}
   .chatIn button{border:0;border-radius:12px;background:var(--green);color:#06210f;font-weight:800;padding:0 14px;font-size:16px}
@@ -161,7 +164,7 @@ let pubMarker = null;
 let centered = false;
 
 map.on("click", e => {
-  if (buscando && searchMarker) { searchMarker.setLatLng(e.latlng); buscando.lat = e.latlng.lat; buscando.lng = e.latlng.lng; return; }
+  if (buscando && searchMarker) { moverBusqueda(e.latlng); toast("📍 Zona marcada"); return; }
   if (publishing && pubMarker) { moverPin(e.latlng); return; }
   if (manualPos) { setPos(e.latlng.lat, e.latlng.lng, 5); toast("Posición fijada a mano"); }
 });
@@ -446,7 +449,7 @@ function bindChat(){
   inp.onblur = () => setTimeout(() => { if (document.activeElement !== $("#chatIn")) chatFocus = false; }, 0);
   inp.onkeydown = e => { if (e.key === "Enter") enviarMsg(inp.value); };
   $("#chatSend").onclick = () => enviarMsg(inp.value);
-  document.querySelectorAll(".quick span").forEach(q => q.onclick = () => enviarMsg(q.dataset.q));
+  document.querySelectorAll(".chat .quick span").forEach(q => q.onclick = () => enviarMsg(q.dataset.q));
 }
 
 /* ---------- Publicar (elegir minutos y ajustar pin) ---------- */
@@ -456,7 +459,7 @@ function guardarCoche(lat, lng){
 function heAparcadoAqui(){
   if (!pos){ toast(manualPos ? "Primero toca el mapa para marcar dónde estás." : "Esperando al GPS…"); return; }
   guardarCoche(pos.lat, pos.lng);
-  toast("📍 Guardado dónde has aparcado. ¿A qué hora sales?"); startPublish(); if (publishing){ publishing.min = "hora"; render(); }
+  toast("📍 Guardado dónde has aparcado. ¿A qué hora sales?"); startPublish(); if (publishing){ publishing.min = "hora"; render(true); }
 }
 function olvidarCoche(){ carPos = null; store.del("carPos"); }
 function startPublish(){
@@ -491,19 +494,49 @@ function horaADate(hhmm){
   if (d < Date.now() - 30*60000) d.setDate(d.getDate() + 1);
   return d;
 }
+/* Hora digital: dos casillas (horas y minutos) + botones para sumar/restar */
+function timeBoxHTML(id, hhmm){
+  const [h, m] = (hhmm || "").split(":");
+  return `<div class="tbox"><input id="${id}H" inputmode="numeric" maxlength="2" placeholder="HH" value="${esc(h||"")}"><span>:</span><input id="${id}M" inputmode="numeric" maxlength="2" placeholder="MM" value="${esc(m||"")}"></div>
+    <div class="quick tq" id="${id}Q">${[-15,-5,5,15].map(d => `<span data-d="${d}">${d>0?"+":"−"}${Math.abs(d)} min</span>`).join("")}</div>`;
+}
+function bindTimeBox(id, get, set){
+  const H = $("#"+id+"H"), M = $("#"+id+"M");
+  const pad = n => String(n).padStart(2, "0");
+  const leer = () => {
+    const h = parseInt(H.value, 10), m = parseInt(M.value || "0", 10);
+    if (isNaN(h) || h > 23 || h < 0 || isNaN(m) || m > 59 || m < 0) { set(""); return; }
+    set(pad(h) + ":" + pad(m));
+  };
+  H.oninput = () => { H.value = H.value.replace(/\D/g, ""); if (H.value.length === 2) M.focus(); leer(); };
+  M.oninput = () => { M.value = M.value.replace(/\D/g, ""); leer(); };
+  H.onfocus = M.onfocus = e => e.target.select();
+  $("#"+id+"Q").querySelectorAll("span").forEach(b => b.onclick = () => {
+    let [h, m] = (get() || new Date().toTimeString().slice(0,5)).split(":").map(Number);
+    let t = (h*60 + m + Number(b.dataset.d) + 1440) % 1440;
+    H.value = pad(Math.floor(t/60)); M.value = pad(t % 60); leer();
+  });
+}
+let searchCircle = null;
+function moverBusqueda(ll){
+  buscando.lat = ll.lat; buscando.lng = ll.lng;
+  searchMarker.setLatLng(ll); searchCircle && searchCircle.setLatLng(ll);
+}
 function startSearch(){
   const base = busqueda || pos;
   if (!base){ toast(manualPos ? "Primero toca el mapa para marcar dónde estás." : "Esperando al GPS…"); return; }
   const h = busqueda ? new Date(busqueda.at) : new Date(Date.now() + 15*60000);
   buscando = { lat: base.lat, lng: base.lng, hora: h.toTimeString().slice(0,5) };
   searchMarker = L.marker([base.lat, base.lng], { draggable:true, icon: pMarker("#3d8bfd","🔍") }).addTo(map);
-  searchMarker.on("dragend", e => { const ll = e.target.getLatLng(); buscando.lat = ll.lat; buscando.lng = ll.lng; });
-  map.setView([base.lat, base.lng], 15);
+  searchCircle = L.circle([base.lat, base.lng], { radius: CONFIG.ZONA_KM*1000, color:"#3d8bfd", weight:2, fillOpacity:.08 }).addTo(map);
+  searchMarker.on("dragend", e => moverBusqueda(e.target.getLatLng()));
+  map.setView([base.lat, base.lng], 14);
   render();
 }
 function endSearchEdit(){
   buscando = null;
   if (searchMarker){ map.removeLayer(searchMarker); searchMarker = null; }
+  if (searchCircle){ map.removeLayer(searchCircle); searchCircle = null; }
   render();
 }
 function aplicarBusqueda(){
@@ -541,9 +574,12 @@ function drawMap(){
   });
 }
 
-function render(){
+function render(force){
   drawMap();
   const s = $("#sheet");
+  const modo = buscando ? "buscando" : publishing ? "publicando" : "";
+  if (modo && s.dataset.modo === modo && !force) return;   // no borrar lo que está escribiendo
+  s.dataset.modo = modo;
   $("#profileChip").textContent = (perfil ? "⭐ " + perfil.puntos + " · " : "") + (me ? (me.car?.matricula || me.name || "Mi coche") : "Mi coche");
 
   if (!sb){
@@ -555,13 +591,13 @@ function render(){
   // 0) Estoy eligiendo zona y hora para buscar
   if (buscando){
     s.innerHTML = `<h2>Busco plaza</h2>
-      <p>Mueve el pin <b>🔍</b> (o toca el mapa) a la zona donde quieres aparcar.</p>
+      <p><b>Toca el mapa</b> donde quieres aparcar (o arrastra el pin 🔍). El círculo azul es la zona donde buscaremos.</p>
       <label>¿A qué hora necesitas aparcar?</label>
-      <input type="time" id="bHora" value="${esc(buscando.hora)}">
+      ${timeBoxHTML("bHora", buscando.hora)}
       <p class="note" style="margin-top:6px">Verás los coches que salen a ${CONFIG.ZONA_KM} km o menos de ese punto, entre ${CONFIG.MARGEN_MIN} min antes y ${CONFIG.MARGEN_MIN} min después de esa hora.</p>
       <button class="btn green" id="bOk">Buscar</button>
       <button class="btn ghost" id="bCancel">Cancelar</button>`;
-    $("#bHora").oninput = e => buscando.hora = e.target.value;
+    bindTimeBox("bHora", () => buscando.hora, v => buscando.hora = v);
     $("#bOk").onclick = aplicarBusqueda; $("#bCancel").onclick = endSearchEdit;
     return;
   }
@@ -573,7 +609,7 @@ function render(){
       <p>${carPos ? "El pin <b>P</b> está donde guardaste tu coche." : "El pin <b>P</b> está donde estás ahora."} Arrástralo (o toca el mapa) si no está justo en tu coche.</p>
       <label>¿Cuándo sales?</label>
       <div class="opts">${opc.map(m => `<div class="opt ${publishing.min===m?"on":""}" data-min="${m}" ${m==="hora"?'style="grid-column:span 2"':""}>${m===0?"Ya":m==="hora"?"🕒 A una hora":m+" min"}</div>`).join("")}</div>
-      ${publishing.min === "hora" ? `<label>Hora de salida</label><input type="time" id="pubHora" value="${esc(publishing.hora)}">` : ""}
+      ${publishing.min === "hora" ? `<label>Hora de salida</label>${timeBoxHTML("pubHora", publishing.hora)}` : ""}
       <p id="pubResumen" style="color:var(--txt)"></p>
       <button class="btn green" id="pubOk">Publicar plaza</button>
       <button class="btn ghost" id="pubCancel">Cancelar</button>
@@ -582,9 +618,9 @@ function render(){
     s.querySelectorAll(".opt").forEach(o => o.onclick = () => {
       const v = o.dataset.min; publishing.min = v === "hora" ? "hora" : +v;
       if (v === "hora" && !publishing.hora){ const d = new Date(Date.now() + 30*60000); publishing.hora = d.toTimeString().slice(0,5); }
-      render();
+      render(true);
     });
-    $("#pubHora") && ($("#pubHora").oninput = e => { publishing.hora = e.target.value; resumen(); });
+    $("#pubHoraH") && bindTimeBox("pubHora", () => publishing.hora, v => { publishing.hora = v; resumen(); });
     resumen();
     $("#pubOk").onclick = publicar; $("#pubCancel").onclick = cancelPublish;
     return;
