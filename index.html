@@ -112,6 +112,7 @@
 const CONFIG = {
   SUPABASE_URL: "https://jyiqnmfztncuxatelezb.supabase.co",
   SUPABASE_ANON_KEY: "sb_publishable_0_pkVL7_8ItwZ7U2qu9kOA_38M_WNnt",  // clave pública (publishable)
+  VAPID_PUBLIC: "BDxQGP8Zgx7A9S28HoP2RF4ulpKg4v8XvkeOqttUSUOJfQE03JEZQ0AjmeXhEYodbStyCQEG3eSTsudWtbsps2M",  // avisos push (clave pública)
   POLL_MS: 4000,          // cada cuánto se actualiza
   RADIO_KM: 3,            // plazas que se muestran alrededor
   ZONA_KM: 1,             // radio de la zona cuando buscas plaza
@@ -240,6 +241,49 @@ function gpsFail(msg){
   render();
 }
 
+/* ---------- Avisos con la app cerrada (push) ---------- */
+const pushSoportado = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const esIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const instalada = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+let swReg = null;
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").then(r => { swReg = r; if (Notification?.permission === "granted") activarAvisos(true); }).catch(e => console.warn(e));
+function avisosActivos(){ return pushSoportado && Notification.permission === "granted"; }
+async function activarAvisos(silencioso){
+  if (!pushSoportado){
+    if (!silencioso) toast(esIOS && !instalada ? "En iPhone: primero añade Appark a la pantalla de inicio (Compartir → Añadir a pantalla de inicio) y ábrela desde ahí." : "Este navegador no permite avisos.", 7000);
+    return false;
+  }
+  try{
+    if (Notification.permission !== "granted"){
+      if (silencioso) return false;
+      const r = await Notification.requestPermission();
+      if (r !== "granted"){ toast("Sin permiso no podemos avisarte con la app cerrada."); render(); return false; }
+    }
+    const reg = swReg || await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub){
+      const k = CONFIG.VAPID_PUBLIC.replace(/-/g, "+").replace(/_/g, "/");
+      const raw = Uint8Array.from(atob(k + "=".repeat((4 - k.length % 4) % 4)), c => c.charCodeAt(0));
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: raw });
+    }
+    if (sb && me){
+      const j = sub.toJSON();
+      await sb.from("push_subs").upsert({ endpoint: j.endpoint, user_id: me.id, sub: j }, { onConflict: "endpoint", ignoreDuplicates: true });
+    }
+    if (!silencioso){ toast("🔔 Avisos activados. Te llegarán aunque tengas la app cerrada."); render(); }
+    return true;
+  }catch(e){ console.warn(e); if (!silencioso) toast("No se pudieron activar los avisos: " + e.message); return false; }
+}
+function avisar(tipo, plaza_id){
+  if (!sb || !me || !plaza_id) return;
+  sb.functions.invoke("relevo-push", { body: { tipo, plaza_id, user_id: me.id } }).catch(e => console.warn(e));
+}
+function bannerAvisos(){
+  if (avisosActivos()) return "";
+  if (pushSoportado && Notification.permission === "denied") return `<p class="note">🔕 Tienes los avisos bloqueados. Actívalos en los ajustes del navegador para enterarte con la app cerrada.</p>`;
+  return `<button class="btn ghost" id="goAvisos">🔔 Activar avisos (para enterarte con la app cerrada)</button>`;
+}
+
 /* ---------- Puntos ---------- */
 async function loadPerfil(){
   if (!me || !sb) return;
@@ -337,6 +381,7 @@ async function publicar(){
   }).select().single();
   if (error){ toast("Error al publicar: " + error.message); if (btn) btn.disabled = false; return; }
   myPlazaId = data.id; store.set("myPlaza", myPlazaId);
+  if (!avisosActivos()) activarAvisos();
   cancelPublish();
   toast("Plaza publicada. Te avisaremos cuando alguien la aparte.");
   loadPlazas();
@@ -350,6 +395,8 @@ async function apartar(p){
   if (data === "sin_puntos"){ toast(`Necesitas ${CONFIG.COSTE} puntos para apartar. Deja tu plaza cuando te vayas y gana ${CONFIG.PREMIO}.`, 7000); return; }
   if (data !== "ok"){ toast("Vaya, otra persona la ha apartado antes."); selected = null; loadPlazas(); return; }
   myTakeId = p.id; store.set("myTake", myTakeId); selected = null;
+  avisar("apartada", p.id);
+  if (!avisosActivos()) activarAvisos();
   lastPush = 0;
   toast("¡Apartada! Ve hacia allí, el conductor ya sabe que vas.");
   loadPlazas();
@@ -390,6 +437,7 @@ async function yaHeSalido(){
   olvidarCoche();
   if (p && p.status === "libre"){ await borrarMiPlaza(); toast("Has salido. Plaza retirada."); return; }
   await sb.from("plazas").update({ owner_left:true }).eq("id", myPlazaId);
+  avisar("salido", myPlazaId);
   toast("Avisado: ya puede aparcar."); loadPlazas();
 }
 async function borrarMiPlaza(){
@@ -427,6 +475,7 @@ async function enviarMsg(texto){
   chatDraft = "";
   const { error } = await sb.from("mensajes").insert({ plaza_id: chatPlaza, author_id: me.id, author_name: me.name, texto });
   if (error){ toast("No se pudo enviar: " + error.message); return; }
+  avisar("mensaje", chatPlaza);
   await loadChat(); render();
 }
 function chatHTML(soyDueno){
@@ -633,6 +682,7 @@ function render(force){
       s.innerHTML = `<span class="tag g">PUBLICADA</span>
         <h2>Esperando a que alguien la aparte…</h2>
         <p>${salidaTxt(mine)}. Te sonará el móvil cuando alguien la coja.</p>
+        ${bannerAvisos()}
         <div class="row"><button class="btn ghost" id="mLeft">Ya me he ido</button><button class="btn red" id="mDel">Retirar</button></div>`;
     } else {
       const d = mine.taker_lat != null ? distM({lat:mine.taker_lat,lng:mine.taker_lng}, mine) : null;
@@ -648,6 +698,7 @@ function render(force){
       bindChat();
     }
     $("#mLeft") && ($("#mLeft").onclick = yaHeSalido);
+    $("#goAvisos") && ($("#goAvisos").onclick = () => activarAvisos());
     $("#mDel") && ($("#mDel").onclick = borrarMiPlaza);
     return;
   }
@@ -704,6 +755,7 @@ function render(force){
       ? `<div class="car">🚗 Tu coche: aparcado a las <b>${horaTxt(carPos.at)}</b>${pos ? " · a " + fmtDist(distM(pos, carPos)) : ""}
            <div class="row" style="margin-top:6px"><button class="btn ghost" id="goCar" style="margin-top:0;padding:10px">Ver en mapa</button><button class="btn ghost" id="carForget" style="margin-top:0;padding:10px">Olvidar</button></div></div>`
       : `<button class="btn" id="goPark">📍 He aparcado aquí</button>`}
+    ${bannerAvisos()}
     <div class="row"><button class="btn green" id="goPub">🚗 Dejo mi plaza</button><button class="btn" id="goSearch">🔍 Busco plaza</button></div>
     ${busqueda
       ? `<h2 style="margin-top:16px">Salen a las ${horaTxt(busqueda.at)} ±${CONFIG.MARGEN_MIN} min (${libres.length})</h2>
@@ -718,6 +770,7 @@ function render(force){
       </div>`).join("") : (busqueda ? `<p>Nadie sale a esa hora en esa zona todavía. Déjalo abierto: si alguien publica una plaza que encaje, aparecerá aquí.</p>` : `<p>Ahora mismo nadie está dejando plaza por aquí. Cuando alguien publique una, aparecerá en verde.</p>`)}`;
   $("#goPub").onclick = startPublish;
   $("#goSearch").onclick = startSearch;
+  $("#goAvisos") && ($("#goAvisos").onclick = () => activarAvisos());
   $("#bEdit") && ($("#bEdit").onclick = e => { e.preventDefault(); startSearch(); });
   $("#bClear") && ($("#bClear").onclick = e => { e.preventDefault(); quitarBusqueda(); });
   $("#goPark") && ($("#goPark").onclick = heAparcadoAqui);
