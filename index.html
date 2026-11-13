@@ -114,8 +114,9 @@ let manualPos = false;
 let plazas = [];
 let myPlazaId = store.get("myPlaza", null);   // plaza que yo dejo
 let myTakeId  = store.get("myTake", null);    // plaza que yo he apartado
+let carPos    = store.get("carPos", null);    // dónde aparqué mi coche {lat,lng,at}
 let selected = null;       // plaza tocada en el mapa
-let publishing = null;     // {min, lat, lng}
+let publishing = null;     // {min, hora, lat, lng}
 let lastStatus = {};       // para detectar cambios y avisar
 let pollTimer = null, lastPush = 0;
 
@@ -126,6 +127,7 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 }).addTo(map);
 const meMarker = L.marker([0,0], { icon: L.divIcon({ className:"", html:'<div class="meDot"></div>', iconSize:[18,18] }) });
 const layer = L.layerGroup().addTo(map);
+const myCarIcon = L.divIcon({ className:"", html:'<div class="pMark" style="background:#c8865a">🚗</div>', iconSize:[34,34], iconAnchor:[17,17] });
 let pubMarker = null;
 let centered = false;
 
@@ -148,11 +150,14 @@ function distM(a, b){
 }
 const fmtDist = m => m < 1000 ? Math.round(m) + " m" : (m/1000).toFixed(1) + " km";
 const etaMin = m => Math.max(1, Math.round(m / (22000/60))); // ~22 km/h en ciudad
+function horaTxt(iso){ return new Date(iso).toLocaleTimeString("es-ES", { hour:"2-digit", minute:"2-digit" }); }
 function minsTo(iso){ return Math.round((new Date(iso) - Date.now())/60000); }
 function salidaTxt(p){
   if (p.owner_left) return "Ya ha salido";
   const m = minsTo(p.leave_at);
-  return m <= 0 ? "Sale ahora" : `Sale en ${m} min`;
+  if (m <= 0) return "Sale ahora";
+  if (m > 60) return "Sale a las " + horaTxt(p.leave_at);
+  return `Sale en ${m} min (${horaTxt(p.leave_at)})`;
 }
 function carTxt(c){
   if (!c) return "";
@@ -205,7 +210,7 @@ function gpsFail(msg){
 /* ---------- Supabase ---------- */
 async function loadPlazas(){
   const since = new Date(Date.now() - CONFIG.CADUCA_MIN*60000).toISOString();
-  const { data, error } = await sb.from("plazas").select("*").gte("created_at", since);
+  const { data, error } = await sb.from("plazas").select("*").gte("leave_at", since);
   if (error){ console.warn(error); return; }
   plazas = data || [];
 
@@ -247,12 +252,23 @@ async function pushMyPosition(){
     .eq("id", myTakeId).eq("taker_id", me.id);
 }
 
+function salidaDate(){
+  if (publishing.min !== "hora") return new Date(Date.now() + publishing.min*60000);
+  const [h, mm] = (publishing.hora || "").split(":").map(Number);
+  if (isNaN(h)) return null;
+  const d = new Date(); d.setHours(h, mm, 0, 0);
+  if (d < Date.now() - 5*60000) d.setDate(d.getDate() + 1);   // hora ya pasada → mañana
+  return d;
+}
 async function publicar(){
-  const { min, lat, lng } = publishing;
+  const { lat, lng } = publishing;
+  const salida = salidaDate();
+  if (!salida){ toast("Elige a qué hora sales"); return; }
+  if (salida - Date.now() > 12*3600000){ toast("Como mucho puedes avisar con 12 horas de antelación"); return; }
   const btn = $("#pubOk"); if (btn) btn.disabled = true;
   const { data, error } = await sb.from("plazas").insert({
     owner_id: me.id, owner_name: me.name, owner_car: me.car,
-    lat, lng, leave_at: new Date(Date.now() + min*60000).toISOString(), status: "libre"
+    lat, lng, leave_at: salida.toISOString(), status: "libre"
   }).select().single();
   if (error){ toast("Error al publicar: " + error.message); if (btn) btn.disabled = false; return; }
   myPlazaId = data.id; store.set("myPlaza", myPlazaId);
@@ -282,6 +298,8 @@ async function soltarReserva(){
 }
 async function heAparcado(){
   if (!myTakeId) return;
+  const t = plazas.find(p => p.id === myTakeId);
+  if (t) guardarCoche(t.lat, t.lng);
   await sb.from("plazas").delete().eq("id", myTakeId);   // se borra todo, incluidas ubicaciones
   myTakeId = null; store.del("myTake");
   toast("¡Perfecto! Relevo completado 🙌"); loadPlazas();
@@ -289,6 +307,7 @@ async function heAparcado(){
 async function yaHeSalido(){
   if (!myPlazaId) return;
   const p = plazas.find(x => x.id === myPlazaId);
+  olvidarCoche();
   if (p && p.status === "libre"){ await borrarMiPlaza(); toast("Has salido. Plaza retirada."); return; }
   await sb.from("plazas").update({ owner_left:true }).eq("id", myPlazaId);
   toast("Avisado: ya puede aparcar."); loadPlazas();
@@ -300,12 +319,22 @@ async function borrarMiPlaza(){
 }
 
 /* ---------- Publicar (elegir minutos y ajustar pin) ---------- */
-function startPublish(){
+function guardarCoche(lat, lng){
+  carPos = { lat, lng, at: new Date().toISOString() }; store.set("carPos", carPos);
+}
+function heAparcadoAqui(){
   if (!pos){ toast(manualPos ? "Primero toca el mapa para marcar dónde estás." : "Esperando al GPS…"); return; }
-  publishing = { min: 0, lat: pos.lat, lng: pos.lng };
-  pubMarker = L.marker([pos.lat, pos.lng], { draggable:true, icon: pMarker("#2ecc71","P") }).addTo(map);
+  guardarCoche(pos.lat, pos.lng);
+  toast("📍 Guardado dónde has aparcado"); render();
+}
+function olvidarCoche(){ carPos = null; store.del("carPos"); }
+function startPublish(){
+  const base = carPos || pos;
+  if (!base){ toast(manualPos ? "Primero toca el mapa para marcar dónde estás." : "Esperando al GPS…"); return; }
+  publishing = { min: 0, hora: "", lat: base.lat, lng: base.lng };
+  pubMarker = L.marker([base.lat, base.lng], { draggable:true, icon: pMarker("#2ecc71","P") }).addTo(map);
   pubMarker.on("dragend", e => { const ll = e.target.getLatLng(); publishing.lat = ll.lat; publishing.lng = ll.lng; });
-  map.setView([pos.lat, pos.lng], 18);
+  map.setView([base.lat, base.lng], 18);
   render();
 }
 function cancelPublish(){
@@ -317,6 +346,7 @@ function cancelPublish(){
 /* ---------- Pintar ---------- */
 function drawMap(){
   layer.clearLayers();
+  if (carPos && !publishing && !myPlazaId) L.marker([carPos.lat, carPos.lng], { icon: myCarIcon }).addTo(layer);
   plazas.forEach(p => {
     const mine = p.id === myPlazaId, taking = p.id === myTakeId;
     if (!mine && !taking && p.status !== "libre") return;
@@ -347,14 +377,24 @@ function render(){
 
   // 1) Estoy publicando
   if (publishing){
+    const opc = [0,5,10,15,30,60,"hora"];
     s.innerHTML = `<h2>Dejar mi plaza</h2>
-      <p>Arrastra el pin <b>P</b> (o toca el mapa) si no está justo donde está tu coche.</p>
+      <p>${carPos ? "El pin <b>P</b> está donde guardaste tu coche." : "El pin <b>P</b> está donde estás ahora."} Arrástralo (o toca el mapa) si no está justo en tu coche.</p>
       <label>¿Cuándo sales?</label>
-      <div class="opts">${[0,5,10,15].map(m => `<div class="opt ${publishing.min===m?"on":""}" data-min="${m}">${m===0?"Ya":m+" min"}</div>`).join("")}</div>
+      <div class="opts">${opc.map(m => `<div class="opt ${publishing.min===m?"on":""}" data-min="${m}" ${m==="hora"?'style="grid-column:span 2"':""}>${m===0?"Ya":m==="hora"?"🕒 A una hora":m+" min"}</div>`).join("")}</div>
+      ${publishing.min === "hora" ? `<label>Hora de salida</label><input type="time" id="pubHora" value="${esc(publishing.hora)}">` : ""}
+      <p id="pubResumen" style="color:var(--txt)"></p>
       <button class="btn green" id="pubOk">Publicar plaza</button>
       <button class="btn ghost" id="pubCancel">Cancelar</button>
       <div class="note">Es un aviso entre conductores, no una reserva oficial. Siempre gratis.</div>`;
-    s.querySelectorAll(".opt").forEach(o => o.onclick = () => { publishing.min = +o.dataset.min; render(); });
+    const resumen = () => { const d = salidaDate(); $("#pubResumen").textContent = d ? "Saldrás a las " + horaTxt(d) + (d.getDate() !== new Date().getDate() ? " (mañana)" : "") : ""; };
+    s.querySelectorAll(".opt").forEach(o => o.onclick = () => {
+      const v = o.dataset.min; publishing.min = v === "hora" ? "hora" : +v;
+      if (v === "hora" && !publishing.hora){ const d = new Date(Date.now() + 30*60000); publishing.hora = d.toTimeString().slice(0,5); }
+      render();
+    });
+    $("#pubHora") && ($("#pubHora").oninput = e => { publishing.hora = e.target.value; resumen(); });
+    resumen();
     $("#pubOk").onclick = publicar; $("#pubCancel").onclick = cancelPublish;
     return;
   }
@@ -420,6 +460,10 @@ function render(){
     .sort((a,b) => (a.d??0) - (b.d??0));
   s.innerHTML = `
     ${manualPos ? `<p>📍 Sin GPS: toca el mapa para marcar dónde estás.</p>` : (!pos ? `<p>Buscando tu ubicación…</p>` : "")}
+    ${carPos
+      ? `<div class="car">🚗 Tu coche: aparcado a las <b>${horaTxt(carPos.at)}</b>${pos ? " · a " + fmtDist(distM(pos, carPos)) : ""}
+           <div class="row" style="margin-top:6px"><button class="btn ghost" id="goCar" style="margin-top:0;padding:10px">Ver en mapa</button><button class="btn ghost" id="carForget" style="margin-top:0;padding:10px">Olvidar</button></div></div>`
+      : `<button class="btn" id="goPark">📍 He aparcado aquí</button>`}
     <button class="btn green" id="goPub">🚗 Me voy · dejo mi plaza</button>
     <h2 style="margin-top:16px">Plazas cerca (${libres.length})</h2>
     ${libres.length ? libres.map(({p,d}) => `
@@ -429,6 +473,9 @@ function render(){
         <div class="s">${esc(carTxt(p.owner_car)) || "Coche sin datos"}</div></div>
       </div>`).join("") : `<p>Ahora mismo nadie está dejando plaza por aquí. Cuando alguien publique una, aparecerá en verde.</p>`}`;
   $("#goPub").onclick = startPublish;
+  $("#goPark") && ($("#goPark").onclick = heAparcadoAqui);
+  $("#goCar") && ($("#goCar").onclick = () => map.setView([carPos.lat, carPos.lng], 18));
+  $("#carForget") && ($("#carForget").onclick = () => { olvidarCoche(); render(); });
   s.querySelectorAll(".item").forEach(it => it.onclick = () => {
     selected = it.dataset.id; const p = plazas.find(x => x.id === selected);
     if (p) map.setView([p.lat, p.lng], 17); render();
