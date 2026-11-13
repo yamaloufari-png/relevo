@@ -107,6 +107,10 @@ const CONFIG = {
   RADIO_KM: 3,            // plazas que se muestran alrededor
   ZONA_KM: 1,             // radio de la zona cuando buscas plaza
   MARGEN_MIN: 5,          // margen de hora al buscar (± minutos)
+  COSTE: 5,               // puntos que cuesta apartar una plaza
+  PREMIO: 10,             // puntos que gana quien deja su plaza (cuando el otro aparca)
+  PRIORIDAD_MIN: 2,       // minutos que las plazas nuevas solo las ven quienes ya han dejado alguna
+  PIN_MAX_M: 75,          // cuánto puedes mover el pin respecto a tu GPS
   CADUCA_MIN: 60          // una plaza publicada caduca a los 60 min
 };
 /* ====================================== */
@@ -131,6 +135,8 @@ let carPos    = store.get("carPos", null);    // dónde aparqué mi coche {lat,l
 let busqueda  = store.get("busqueda", null);  // filtro activo {lat,lng,at(ISO)}
 let buscando  = null;      // editando búsqueda {lat,lng,hora}
 let searchMarker = null;
+let confirmar = false;
+let perfil = null, reput = {};   // mis puntos y la reputación de otros
 let chatMsgs = [], chatPlaza = null, chatSeen = store.get("chatSeen", {}), chatDraft = "", chatFocus = false;
 let selected = null;       // plaza tocada en el mapa
 let publishing = null;     // {min, hora, lat, lng}
@@ -150,7 +156,7 @@ let centered = false;
 
 map.on("click", e => {
   if (buscando && searchMarker) { searchMarker.setLatLng(e.latlng); buscando.lat = e.latlng.lat; buscando.lng = e.latlng.lng; return; }
-  if (publishing && pubMarker) { pubMarker.setLatLng(e.latlng); publishing.lat = e.latlng.lat; publishing.lng = e.latlng.lng; return; }
+  if (publishing && pubMarker) { moverPin(e.latlng); return; }
   if (manualPos) { setPos(e.latlng.lat, e.latlng.lng, 5); toast("Posición fijada a mano"); }
 });
 
@@ -225,6 +231,36 @@ function gpsFail(msg){
   render();
 }
 
+/* ---------- Puntos ---------- */
+async function loadPerfil(){
+  if (!me || !sb) return;
+  const antes = perfil;
+  const { data, error } = await sb.rpc("relevo_usuario", { p_id: me.id, p_nombre: me.name });
+  if (error){ console.warn(error); return; }
+  perfil = data;
+  if (antes && perfil.dadas > antes.dadas){
+    beep(); toast(`⭐ +${CONFIG.PREMIO} puntos por dejar tu plaza. Tienes ${perfil.puntos}: puedes apartar ${Math.floor(perfil.puntos/CONFIG.COSTE)} plazas cuando vuelvas.`, 8000);
+  } else if (antes && perfil.falsas > antes.falsas){
+    toast("⚠️ Te han avisado de que no había plaza. Pierdes 10 puntos.", 8000);
+  }
+}
+async function loadReput(){
+  const ids = [...new Set(plazas.map(p => p.owner_id))].filter(id => !reput[id] || Date.now() - reput[id]._t > 60000);
+  if (!ids.length) return;
+  const { data } = await sb.from("usuarios").select("id,dadas,falsas").in("id", ids);
+  (data || []).forEach(u => reput[u.id] = { ...u, _t: Date.now() });
+}
+function reputTxt(id){
+  const r = reput[id];
+  if (!r) return "Conductor nuevo";
+  return `Ha dejado ${r.dadas} plaza${r.dadas === 1 ? "" : "s"} · ${r.falsas ? "⚠️ " + r.falsas + " aviso" + (r.falsas === 1 ? "" : "s") : "0 avisos"}`;
+}
+function puedoVer(p){   // prioridad: las plazas recién publicadas las ven antes quienes ya han dejado alguna
+  if (p.owner_id === me?.id || p.id === myTakeId) return true;
+  if (perfil && perfil.dadas > 0) return true;
+  return Date.now() - new Date(p.created_at) > CONFIG.PRIORIDAD_MIN*60000;
+}
+
 /* ---------- Supabase ---------- */
 async function loadPlazas(){
   const since = new Date(Date.now() - CONFIG.CADUCA_MIN*60000).toISOString();
@@ -236,11 +272,11 @@ async function loadPlazas(){
   if (myPlazaId && !plazas.find(p => p.id === myPlazaId)){ myPlazaId = null; store.del("myPlaza"); }
   if (myTakeId){
     const t = plazas.find(p => p.id === myTakeId);
-    if (!t){ myTakeId = null; store.del("myTake"); toast("La plaza que ibas a coger ya no está disponible."); beep(); }
+    if (!t){ myTakeId = null; store.del("myTake"); toast(`La plaza que ibas a coger ya no está disponible. Te devolvemos tus ${CONFIG.COSTE} puntos.`); beep(); }
     else if (t.taker_id !== me?.id){ myTakeId = null; store.del("myTake"); toast("El conductor ha liberado la reserva."); }
   }
   notifyChanges();
-  await loadChat();
+  await Promise.all([loadChat(), loadPerfil(), loadReput()]);
   render();
   pushMyPosition();
 }
@@ -298,12 +334,12 @@ async function publicar(){
 }
 
 async function apartar(p){
-  const { data, error } = await sb.from("plazas").update({
-    status: "apartada", taker_id: me.id, taker_name: me.name, taker_car: me.car,
-    taker_lat: pos?.lat ?? null, taker_lng: pos?.lng ?? null, taker_at: new Date().toISOString()
-  }).eq("id", p.id).eq("status", "libre").select();
+  await loadPerfil();
+  const { data, error } = await sb.rpc("relevo_apartar", { p_plaza: p.id, p_user: me.id, p_nombre: me.name, p_car: me.car,
+    p_lat: pos?.lat ?? null, p_lng: pos?.lng ?? null });
   if (error){ toast("Error: " + error.message); return; }
-  if (!data || !data.length){ toast("Vaya, otra persona la ha apartado antes."); selected = null; loadPlazas(); return; }
+  if (data === "sin_puntos"){ toast(`Necesitas ${CONFIG.COSTE} puntos para apartar. Deja tu plaza cuando te vayas y gana ${CONFIG.PREMIO}.`, 7000); return; }
+  if (data !== "ok"){ toast("Vaya, otra persona la ha apartado antes."); selected = null; loadPlazas(); return; }
   myTakeId = p.id; store.set("myTake", myTakeId); selected = null;
   lastPush = 0;
   toast("¡Apartada! Ve hacia allí, el conductor ya sabe que vas.");
@@ -312,17 +348,25 @@ async function apartar(p){
 
 async function soltarReserva(){
   if (!myTakeId) return;
-  await sb.from("plazas").update({ status:"libre", taker_id:null, taker_name:null, taker_car:null, taker_lat:null, taker_lng:null, taker_at:null })
-    .eq("id", myTakeId).eq("taker_id", me.id);
-  myTakeId = null; store.del("myTake"); loadPlazas();
+  await sb.rpc("relevo_soltar", { p_plaza: myTakeId, p_user: me.id });
+  myTakeId = null; store.del("myTake");
+  toast(`Reserva anulada. Te devolvemos tus ${CONFIG.COSTE} puntos.`); loadPlazas();
 }
 async function heAparcado(){
   if (!myTakeId) return;
   const t = plazas.find(p => p.id === myTakeId);
   if (t) guardarCoche(t.lat, t.lng);
-  await sb.from("plazas").delete().eq("id", myTakeId);   // se borra todo, incluidas ubicaciones
+  await sb.rpc("relevo_completar", { p_plaza: myTakeId, p_user: me.id });   // se borra todo, incluidas ubicaciones
   myTakeId = null; store.del("myTake");
-  toast("¡Perfecto! Relevo completado 🙌"); loadPlazas();
+  toast(`¡Perfecto! Relevo completado 🙌 ${t?.owner_name || "El otro conductor"} gana ${CONFIG.PREMIO} puntos.`); loadPlazas();
+}
+async function noHabiaPlaza(){
+  if (!myTakeId) return;
+  if (!confirmar){ confirmar = true; render(); return; }
+  confirmar = false;
+  await sb.rpc("relevo_denunciar", { p_plaza: myTakeId, p_user: me.id });
+  myTakeId = null; store.del("myTake");
+  toast(`Lo sentimos. Te devolvemos tus ${CONFIG.COSTE} puntos y avisamos al otro conductor.`, 6000); loadPlazas();
 }
 async function yaHeSalido(){
   if (!myPlazaId) return;
@@ -334,7 +378,9 @@ async function yaHeSalido(){
 }
 async function borrarMiPlaza(){
   if (!myPlazaId) return;
-  await sb.from("plazas").delete().eq("id", myPlazaId);
+  const p = plazas.find(x => x.id === myPlazaId);
+  if (p && p.taker_id) await sb.rpc("relevo_soltar", { p_plaza: myPlazaId, p_user: me.id });   // devuelve sus puntos al otro
+  else await sb.from("plazas").delete().eq("id", myPlazaId);
   myPlazaId = null; store.del("myPlaza"); loadPlazas();
 }
 
@@ -405,9 +451,17 @@ function startPublish(){
   if (!base){ toast(manualPos ? "Primero toca el mapa para marcar dónde estás." : "Esperando al GPS…"); return; }
   publishing = { min: 0, hora: "", lat: base.lat, lng: base.lng };
   pubMarker = L.marker([base.lat, base.lng], { draggable:true, icon: pMarker("#2ecc71","P") }).addTo(map);
-  pubMarker.on("dragend", e => { const ll = e.target.getLatLng(); publishing.lat = ll.lat; publishing.lng = ll.lng; });
+  publishing.base = { lat: base.lat, lng: base.lng };
+  pubMarker.on("dragend", e => moverPin(e.target.getLatLng()));
   map.setView([base.lat, base.lng], 18);
   render();
+}
+function moverPin(ll){
+  if (distM(publishing.base, { lat: ll.lat, lng: ll.lng }) > CONFIG.PIN_MAX_M){
+    toast(`Solo puedes ajustar el pin unos metros. La plaza tiene que estar donde está tu coche.`);
+    pubMarker.setLatLng([publishing.lat, publishing.lng]); return;
+  }
+  pubMarker.setLatLng(ll); publishing.lat = ll.lat; publishing.lng = ll.lng;
 }
 function cancelPublish(){
   publishing = null;
@@ -458,7 +512,7 @@ function drawMap(){
   if (carPos && !publishing && !myPlazaId) L.marker([carPos.lat, carPos.lng], { icon: myCarIcon }).addTo(layer);
   plazas.forEach(p => {
     const mine = p.id === myPlazaId, taking = p.id === myTakeId;
-    if (!mine && !taking && p.status !== "libre") return;
+    if (!mine && !taking && (p.status !== "libre" || !puedoVer(p))) return;
     if (!mine && !taking && busqueda && !encaja(p)) return;
     if (!mine && !taking && !busqueda && pos && distM(pos, p) > CONFIG.RADIO_KM*1000) return;
     const color = mine ? "#c8865a" : taking ? "#f39c12" : "#2ecc71";
@@ -477,7 +531,7 @@ function drawMap(){
 function render(){
   drawMap();
   const s = $("#sheet");
-  $("#profileChip").textContent = me ? (me.car?.matricula || me.name || "Mi coche") : "Mi coche";
+  $("#profileChip").textContent = (perfil ? "⭐ " + perfil.puntos + " · " : "") + (me ? (me.car?.matricula || me.name || "Mi coche") : "Mi coche");
 
   if (!sb){
     s.innerHTML = `<h2>Falta configurar</h2>
@@ -510,7 +564,7 @@ function render(){
       <p id="pubResumen" style="color:var(--txt)"></p>
       <button class="btn green" id="pubOk">Publicar plaza</button>
       <button class="btn ghost" id="pubCancel">Cancelar</button>
-      <div class="note">Es un aviso entre conductores, no una reserva oficial. Siempre gratis.</div>`;
+      <div class="note">Cuando alguien la coja y aparque, ganarás <b>${CONFIG.PREMIO} puntos</b> ⭐ para aparcar tú después. Es un aviso entre conductores, no una reserva oficial. Siempre gratis.</div>`;
     const resumen = () => { const d = salidaDate(); $("#pubResumen").textContent = d ? "Saldrás a las " + horaTxt(d) + (d.getDate() !== new Date().getDate() ? " (mañana)" : "") : ""; };
     s.querySelectorAll(".opt").forEach(o => o.onclick = () => {
       const v = o.dataset.min; publishing.min = v === "hora" ? "hora" : +v;
@@ -561,9 +615,14 @@ function render(){
       <a class="btn" style="text-align:center;text-decoration:none" target="_blank" rel="noopener"
          href="https://www.google.com/maps/dir/?api=1&destination=${take.lat},${take.lng}&travelmode=driving">🧭 Cómo llegar</a>
       <div class="row"><button class="btn green" id="tPark">He aparcado</button><button class="btn red" id="tDrop">Ya no la quiero</button></div>
+      ${confirmar
+        ? `<div class="car" style="border-color:var(--red)">¿Seguro que <b>no había plaza</b>? Al otro conductor se le quitarán 10 puntos.
+             <div class="row"><button class="btn red" id="tFake">Sí, no había</button><button class="btn ghost" id="tFakeNo">No, me he equivocado</button></div></div>`
+        : `<button class="btn ghost" id="tFake">🚫 He llegado y no había plaza</button>`}
       ${chatHTML(false)}`;
     bindChat();
-    $("#tPark").onclick = heAparcado; $("#tDrop").onclick = soltarReserva;
+    $("#tPark").onclick = heAparcado; $("#tDrop").onclick = soltarReserva; $("#tFake").onclick = noHabiaPlaza;
+    $("#tFakeNo") && ($("#tFakeNo").onclick = () => { confirmar = false; render(); });
     return;
   }
 
@@ -575,7 +634,9 @@ function render(){
       <h2>Plaza de ${esc(sel.owner_name || "un conductor")}</h2>
       <p>${salidaTxt(sel)}${d!=null ? " · a " + fmtDist(d) + " (~" + etaMin(d) + " min)" : ""}</p>
       <div class="car">Coche que sale: <b>${esc(carTxt(sel.owner_car)) || "sin datos"}</b>${sel.owner_car?.tamano ? " · tamaño " + esc(sel.owner_car.tamano) : ""}</div>
-      <button class="btn green" id="sTake">La quiero</button>
+      <p>👤 ${esc(reputTxt(sel.owner_id))}</p>
+      <button class="btn green" id="sTake">La quiero · ${CONFIG.COSTE} ⭐</button>
+      <p class="note" style="margin-top:6px">Tienes ${perfil ? perfil.puntos : "—"} puntos. Si al llegar no hay plaza, te los devolvemos.</p>
       <button class="btn ghost" id="sBack">Volver</button>`;
     $("#sTake").onclick = () => apartar(sel); $("#sBack").onclick = () => { selected = null; render(); };
     return;
@@ -583,7 +644,7 @@ function render(){
 
   // 5) Inicio
   const ref = busqueda || pos;
-  const libres = plazas.filter(p => p.status === "libre" && p.owner_id !== me?.id)
+  const libres = plazas.filter(p => p.status === "libre" && p.owner_id !== me?.id && puedoVer(p))
     .filter(encaja)
     .map(p => ({ p, d: ref ? distM(ref, p) : null }))
     .filter(x => busqueda || x.d == null || x.d <= CONFIG.RADIO_KM*1000)
@@ -599,6 +660,7 @@ function render(){
       ? `<h2 style="margin-top:16px">Salen a las ${horaTxt(busqueda.at)} ±${CONFIG.MARGEN_MIN} min (${libres.length})</h2>
          <p>En la zona que elegiste (${CONFIG.ZONA_KM} km). <a href="#" id="bEdit" style="color:var(--blue)">Cambiar</a> · <a href="#" id="bClear" style="color:var(--blue)">Ver todas</a></p>`
       : `<h2 style="margin-top:16px">Plazas cerca (${libres.length})</h2>`}
+    ${perfil && perfil.dadas === 0 ? `<p class="note" style="margin-top:0">⭐ Quien ya ha dejado alguna plaza ve las nuevas ${CONFIG.PRIORIDAD_MIN} min antes. Deja la tuya al irte y tendrás prioridad.</p>` : ""}
     ${libres.length ? libres.map(({p,d}) => `
       <div class="item" data-id="${p.id}">
         <div class="pin">P</div>
