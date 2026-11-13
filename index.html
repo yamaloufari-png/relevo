@@ -600,8 +600,7 @@ let sitios = store.get("sitios", {});   // { casa:{lat,lng,nombre}, trabajo:{...
 const SITIOS = { casa: "🏠 Casa", trabajo: "💼 Trabajo" };
 function sitiosHTML(){
   return `<div class="quick" id="sitiosQ">${Object.entries(SITIOS).map(([k, t]) =>
-    `<span data-k="${k}" style="${sitios[k] ? "border-color:var(--green)" : "opacity:.75"}">${t}${sitios[k] ? "" : " (sin guardar)"}</span>`).join("")}</div>
-    <div id="guardarSitio" class="note" style="margin-top:0"></div>`;
+    `<span data-k="${k}" style="${sitios[k] ? "border-color:var(--green)" : "opacity:.75"}">${t}${sitios[k] ? "" : " (sin guardar)"}</span>`).join("")}</div>`;
 }
 function bindSitios(){
   $("#sitiosQ").querySelectorAll("span").forEach(b => b.onclick = () => {
@@ -621,7 +620,7 @@ function mostrarGuardar(nombre){
     sitios[a.dataset.k] = { lat: buscando.lat, lng: buscando.lng, nombre: buscando.nombre || ($("#geoQ").value || "").trim() };
     store.set("sitios", sitios);
     toast(`✅ Guardado como ${SITIOS[a.dataset.k]}`);
-    $("#sitiosQ").outerHTML = sitiosHTML().split('<div id="guardarSitio"')[0];
+    $("#sitiosQ").outerHTML = sitiosHTML();
     bindSitios();
   });
 }
@@ -703,6 +702,7 @@ function render(force){
       ${sitiosHTML()}
       <div class="geo"><input id="geoQ" enterkeyhint="search" placeholder="Población o dirección (ej: Martorell)"><button id="geoBtn">🔎</button></div>
       <div class="geoRes" id="geoRes"></div>
+      <div id="guardarSitio" class="note" style="margin-top:6px"></div>
       <p class="note" style="margin-top:6px">O <b>toca el mapa</b> en el sitio exacto. El círculo azul es la zona donde buscaremos.</p>
       <label>¿A qué hora necesitas aparcar?</label>
       ${timeBoxHTML("bHora", buscando.hora)}
