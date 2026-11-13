@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1b2d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Relevo · Pasa tu plaza</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{
+    --navy:#0f1b2d; --navy2:#16263d; --card:#1c2f4a; --line:#2a4366;
+    --txt:#eef3fa; --muted:#9db0c9; --green:#2ecc71; --orange:#f39c12;
+    --red:#e74c3c; --blue:#3d8bfd; --copper:#c8865a;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--navy);color:var(--txt);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  #map{position:fixed;inset:0;z-index:1}
+  header{position:fixed;top:0;left:0;right:0;z-index:500;
+    padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;
+    background:linear-gradient(var(--navy) 60%,transparent);
+    display:flex;align-items:center;justify-content:space-between}
+  .logo{font-weight:800;font-size:20px;letter-spacing:.5px}
+  .logo span{color:var(--copper)}
+  .chip{background:var(--card);border:1px solid var(--line);border-radius:20px;
+    padding:6px 12px;font-size:13px;color:var(--muted);cursor:pointer}
+  #sheet{position:fixed;left:0;right:0;bottom:0;z-index:600;background:var(--navy2);
+    border-top-left-radius:20px;border-top-right-radius:20px;border-top:1px solid var(--line);
+    padding:14px 16px calc(env(safe-area-inset-bottom) + 16px);max-height:62vh;overflow:auto;
+    box-shadow:0 -8px 30px rgba(0,0,0,.4)}
+  #sheet h2{margin:2px 0 6px;font-size:18px}
+  #sheet p{margin:6px 0;color:var(--muted);font-size:14px;line-height:1.4}
+  .btn{display:block;width:100%;border:0;border-radius:14px;padding:15px;font-size:16px;
+    font-weight:700;color:#fff;background:var(--blue);margin-top:10px;cursor:pointer}
+  .btn.green{background:var(--green);color:#06210f}
+  .btn.orange{background:var(--orange);color:#2a1700}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+  .btn.red{background:transparent;border:1px solid var(--red);color:var(--red)}
+  .btn:disabled{opacity:.5}
+  .row{display:flex;gap:8px}
+  .row .btn{flex:1}
+  .item{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);
+    border-radius:14px;padding:12px;margin-top:8px;cursor:pointer}
+  .pin{width:36px;height:36px;border-radius:10px;background:var(--green);color:#06210f;
+    display:flex;align-items:center;justify-content:center;font-weight:900;flex:none}
+  .item .t{font-weight:700}
+  .item .s{color:var(--muted);font-size:13px}
+  .big{font-size:28px;font-weight:800;margin:4px 0}
+  .tag{display:inline-block;padding:3px 9px;border-radius:10px;font-size:12px;font-weight:700}
+  .tag.g{background:rgba(46,204,113,.15);color:var(--green)}
+  .tag.o{background:rgba(243,156,18,.15);color:var(--orange)}
+  .car{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:8px 0}
+  .car b{color:var(--copper)}
+  .opts{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px}
+  .opt{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 4px;
+    text-align:center;font-weight:700;cursor:pointer}
+  .opt.on{border-color:var(--green);color:var(--green)}
+  label{display:block;font-size:13px;color:var(--muted);margin-top:10px}
+  input,select{width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);
+    background:var(--card);color:var(--txt);font-size:16px;margin-top:4px}
+  .note{font-size:12px;color:var(--muted);margin-top:12px;line-height:1.4}
+  #toast{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 64px);transform:translateX(-50%);
+    z-index:900;background:var(--copper);color:#1b0f06;font-weight:700;padding:10px 16px;border-radius:12px;
+    display:none;max-width:90vw;text-align:center;box-shadow:0 6px 20px rgba(0,0,0,.4)}
+  #overlay{position:fixed;inset:0;z-index:950;background:var(--navy);display:none;overflow:auto;
+    padding:calc(env(safe-area-inset-top) + 24px) 20px 30px}
+  .meDot{width:18px;height:18px;border-radius:50%;background:var(--blue);border:3px solid #fff;
+    box-shadow:0 0 0 6px rgba(61,139,253,.25)}
+  .pMark{width:34px;height:34px;border-radius:10px;border:2px solid #fff;display:flex;align-items:center;
+    justify-content:center;font-weight:900;font-size:18px;color:#06210f;box-shadow:0 3px 10px rgba(0,0,0,.4)}
+  .carMark{font-size:26px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.5))}
+  .leaflet-control-attribution{font-size:9px}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<header>
+  <div class="logo">Relevo<span>·</span></div>
+  <div class="chip" id="profileChip">Mi coche</div>
+</header>
+<div id="toast"></div>
+<div id="sheet"></div>
+<div id="overlay"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* ============ CONFIGURACIÓN ============
+   Pon aquí los datos de tu proyecto Supabase
+   (Project Settings → API). */
+const CONFIG = {
+  SUPABASE_URL: "https://jyiqnmfztncuxatelezb.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_0_pkVL7_8ItwZ7U2qu9kOA_38M_WNnt",  // clave pública (publishable)
+  POLL_MS: 4000,          // cada cuánto se actualiza
+  RADIO_KM: 3,            // plazas que se muestran alrededor
+  CADUCA_MIN: 60          // una plaza publicada caduca a los 60 min
+};
+/* ====================================== */
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem("relevo_"+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem("relevo_"+k, JSON.stringify(v)); }catch(e){} },
+  del(k){ try{ localStorage.removeItem("relevo_"+k); }catch(e){} }
+};
+
+let sb = null;
+let me = store.get("me", null);
+if (me && !me.id) me.id = crypto.randomUUID();
+let pos = null;            // {lat,lng,acc}
+let manualPos = false;
+let plazas = [];
+let myPlazaId = store.get("myPlaza", null);   // plaza que yo dejo
+let myTakeId  = store.get("myTake", null);    // plaza que yo he apartado
+let selected = null;       // plaza tocada en el mapa
+let publishing = null;     // {min, lat, lng}
+let lastStatus = {};       // para detectar cambios y avisar
+let pollTimer = null, lastPush = 0;
+
+/* ---------- Mapa ---------- */
+const map = L.map("map", { zoomControl:false, attributionControl:true }).setView([41.48, 1.93], 15);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: "© OpenStreetMap"
+}).addTo(map);
+const meMarker = L.marker([0,0], { icon: L.divIcon({ className:"", html:'<div class="meDot"></div>', iconSize:[18,18] }) });
+const layer = L.layerGroup().addTo(map);
+let pubMarker = null;
+let centered = false;
+
+map.on("click", e => {
+  if (publishing && pubMarker) { pubMarker.setLatLng(e.latlng); publishing.lat = e.latlng.lat; publishing.lng = e.latlng.lng; return; }
+  if (manualPos) { setPos(e.latlng.lat, e.latlng.lng, 5); toast("Posición fijada a mano"); }
+});
+
+function pMarker(color, txt){
+  return L.divIcon({ className:"", html:`<div class="pMark" style="background:${color}">${txt}</div>`, iconSize:[34,34], iconAnchor:[17,17] });
+}
+const carIcon = L.divIcon({ className:"", html:'<div class="carMark">🚗</div>', iconSize:[28,28], iconAnchor:[14,14] });
+
+/* ---------- Utilidades ---------- */
+function distM(a, b){
+  const R = 6371000, toR = x => x*Math.PI/180;
+  const dLat = toR(b.lat-a.lat), dLng = toR(b.lng-a.lng);
+  const h = Math.sin(dLat/2)**2 + Math.cos(toR(a.lat))*Math.cos(toR(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+const fmtDist = m => m < 1000 ? Math.round(m) + " m" : (m/1000).toFixed(1) + " km";
+const etaMin = m => Math.max(1, Math.round(m / (22000/60))); // ~22 km/h en ciudad
+function minsTo(iso){ return Math.round((new Date(iso) - Date.now())/60000); }
+function salidaTxt(p){
+  if (p.owner_left) return "Ya ha salido";
+  const m = minsTo(p.leave_at);
+  return m <= 0 ? "Sale ahora" : `Sale en ${m} min`;
+}
+function carTxt(c){
+  if (!c) return "";
+  return [c.modelo, c.color].filter(Boolean).join(" · ") + (c.matricula ? " · " + c.matricula : "");
+}
+
+let actx = null;
+function beep(){
+  try{
+    if (!actx) actx = new (window.AudioContext||window.webkitAudioContext)();
+    [0, .18].forEach(t => {
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.frequency.value = 880; o.connect(g); g.connect(actx.destination);
+      g.gain.setValueAtTime(.2, actx.currentTime+t); g.gain.exponentialRampToValueAtTime(.001, actx.currentTime+t+.15);
+      o.start(actx.currentTime+t); o.stop(actx.currentTime+t+.16);
+    });
+  }catch(e){}
+  try{ navigator.vibrate && navigator.vibrate([200,100,200]); }catch(e){}
+}
+document.addEventListener("click", () => { if (!actx) try{ actx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }, { once:true });
+
+let toastT;
+function toast(msg, ms=3500){
+  const t = $("#toast"); t.textContent = msg; t.style.display = "block";
+  clearTimeout(toastT); toastT = setTimeout(() => t.style.display = "none", ms);
+}
+
+/* ---------- GPS ---------- */
+function setPos(lat, lng, acc){
+  pos = { lat, lng, acc };
+  meMarker.setLatLng([lat, lng]).addTo(map);
+  if (!centered){ map.setView([lat, lng], 17); centered = true; }
+  render();
+}
+function startGPS(){
+  if (!navigator.geolocation){ gpsFail("Este móvil no tiene GPS disponible."); return; }
+  navigator.geolocation.watchPosition(
+    p => { manualPos = false; setPos(p.coords.latitude, p.coords.longitude, p.coords.accuracy); },
+    e => gpsFail(e.code === 1 ? "Has denegado el permiso de ubicación." : "No se pudo obtener tu ubicación."),
+    { enableHighAccuracy:true, maximumAge:3000, timeout:15000 }
+  );
+}
+function gpsFail(msg){
+  if (pos) return;
+  manualPos = true;
+  toast(msg + " Toca el mapa para marcar dónde estás.", 6000);
+  render();
+}
+
+/* ---------- Supabase ---------- */
+async function loadPlazas(){
+  const since = new Date(Date.now() - CONFIG.CADUCA_MIN*60000).toISOString();
+  const { data, error } = await sb.from("plazas").select("*").gte("created_at", since);
+  if (error){ console.warn(error); return; }
+  plazas = data || [];
+
+  // ¿siguen existiendo mis cosas?
+  if (myPlazaId && !plazas.find(p => p.id === myPlazaId)){ myPlazaId = null; store.del("myPlaza"); }
+  if (myTakeId){
+    const t = plazas.find(p => p.id === myTakeId);
+    if (!t){ myTakeId = null; store.del("myTake"); toast("La plaza que ibas a coger ya no está disponible."); beep(); }
+    else if (t.taker_id !== me.id){ myTakeId = null; store.del("myTake"); toast("El conductor ha liberado la reserva."); }
+  }
+  notifyChanges();
+  render();
+  pushMyPosition();
+}
+
+function notifyChanges(){
+  plazas.forEach(p => {
+    const key = p.status + "|" + p.owner_left + "|" + p.taker_id;
+    const prev = lastStatus[p.id];
+    if (prev && prev !== key){
+      if (p.id === myPlazaId && p.status === "apartada" && !prev.startsWith("apartada")){
+        beep(); toast(`🚗 ${p.taker_name || "Alguien"} viene a por tu plaza`);
+      }
+      if (p.id === myPlazaId && p.status === "libre" && prev.startsWith("apartada")){
+        toast("La otra persona ha cancelado. Tu plaza vuelve a estar publicada.");
+      }
+      if (p.id === myTakeId && p.owner_left && !prev.includes("|true|")){
+        beep(); toast("✅ ¡Ya ha salido! La plaza está libre.");
+      }
+    }
+    lastStatus[p.id] = key;
+  });
+}
+
+async function pushMyPosition(){
+  if (!myTakeId || !pos || Date.now() - lastPush < 8000) return;
+  lastPush = Date.now();
+  await sb.from("plazas").update({ taker_lat: pos.lat, taker_lng: pos.lng, taker_at: new Date().toISOString() })
+    .eq("id", myTakeId).eq("taker_id", me.id);
+}
+
+async function publicar(){
+  const { min, lat, lng } = publishing;
+  const btn = $("#pubOk"); if (btn) btn.disabled = true;
+  const { data, error } = await sb.from("plazas").insert({
+    owner_id: me.id, owner_name: me.name, owner_car: me.car,
+    lat, lng, leave_at: new Date(Date.now() + min*60000).toISOString(), status: "libre"
+  }).select().single();
+  if (error){ toast("Error al publicar: " + error.message); if (btn) btn.disabled = false; return; }
+  myPlazaId = data.id; store.set("myPlaza", myPlazaId);
+  cancelPublish();
+  toast("Plaza publicada. Te avisaremos cuando alguien la aparte.");
+  loadPlazas();
+}
+
+async function apartar(p){
+  const { data, error } = await sb.from("plazas").update({
+    status: "apartada", taker_id: me.id, taker_name: me.name, taker_car: me.car,
+    taker_lat: pos?.lat ?? null, taker_lng: pos?.lng ?? null, taker_at: new Date().toISOString()
+  }).eq("id", p.id).eq("status", "libre").select();
+  if (error){ toast("Error: " + error.message); return; }
+  if (!data || !data.length){ toast("Vaya, otra persona la ha apartado antes."); selected = null; loadPlazas(); return; }
+  myTakeId = p.id; store.set("myTake", myTakeId); selected = null;
+  lastPush = 0;
+  toast("¡Apartada! Ve hacia allí, el conductor ya sabe que vas.");
+  loadPlazas();
+}
+
+async function soltarReserva(){
+  if (!myTakeId) return;
+  await sb.from("plazas").update({ status:"libre", taker_id:null, taker_name:null, taker_car:null, taker_lat:null, taker_lng:null, taker_at:null })
+    .eq("id", myTakeId).eq("taker_id", me.id);
+  myTakeId = null; store.del("myTake"); loadPlazas();
+}
+async function heAparcado(){
+  if (!myTakeId) return;
+  await sb.from("plazas").delete().eq("id", myTakeId);   // se borra todo, incluidas ubicaciones
+  myTakeId = null; store.del("myTake");
+  toast("¡Perfecto! Relevo completado 🙌"); loadPlazas();
+}
+async function yaHeSalido(){
+  if (!myPlazaId) return;
+  const p = plazas.find(x => x.id === myPlazaId);
+  if (p && p.status === "libre"){ await borrarMiPlaza(); toast("Has salido. Plaza retirada."); return; }
+  await sb.from("plazas").update({ owner_left:true }).eq("id", myPlazaId);
+  toast("Avisado: ya puede aparcar."); loadPlazas();
+}
+async function borrarMiPlaza(){
+  if (!myPlazaId) return;
+  await sb.from("plazas").delete().eq("id", myPlazaId);
+  myPlazaId = null; store.del("myPlaza"); loadPlazas();
+}
+
+/* ---------- Publicar (elegir minutos y ajustar pin) ---------- */
+function startPublish(){
+  if (!pos){ toast(manualPos ? "Primero toca el mapa para marcar dónde estás." : "Esperando al GPS…"); return; }
+  publishing = { min: 0, lat: pos.lat, lng: pos.lng };
+  pubMarker = L.marker([pos.lat, pos.lng], { draggable:true, icon: pMarker("#2ecc71","P") }).addTo(map);
+  pubMarker.on("dragend", e => { const ll = e.target.getLatLng(); publishing.lat = ll.lat; publishing.lng = ll.lng; });
+  map.setView([pos.lat, pos.lng], 18);
+  render();
+}
+function cancelPublish(){
+  publishing = null;
+  if (pubMarker){ map.removeLayer(pubMarker); pubMarker = null; }
+  render();
+}
+
+/* ---------- Pintar ---------- */
+function drawMap(){
+  layer.clearLayers();
+  plazas.forEach(p => {
+    const mine = p.id === myPlazaId, taking = p.id === myTakeId;
+    if (!mine && !taking && p.status !== "libre") return;
+    if (!mine && !taking && pos && distM(pos, p) > CONFIG.RADIO_KM*1000) return;
+    const color = mine ? "#c8865a" : taking ? "#f39c12" : "#2ecc71";
+    const m = L.marker([p.lat, p.lng], { icon: pMarker(color, "P") }).addTo(layer);
+    if (!mine && !taking) m.on("click", () => { selected = p.id; render(); });
+    if ((mine || taking) && p.status === "apartada" && p.taker_lat != null && mine){
+      L.marker([p.taker_lat, p.taker_lng], { icon: carIcon }).addTo(layer);
+      L.polyline([[p.taker_lat, p.taker_lng],[p.lat, p.lng]], { color:"#f39c12", dashArray:"6 8", weight:3 }).addTo(layer);
+    }
+    if (taking && pos){
+      L.polyline([[pos.lat, pos.lng],[p.lat, p.lng]], { color:"#f39c12", dashArray:"6 8", weight:3 }).addTo(layer);
+    }
+  });
+}
+
+function render(){
+  drawMap();
+  const s = $("#sheet");
+  $("#profileChip").textContent = me ? (me.car?.matricula || me.name || "Mi coche") : "Mi coche";
+
+  if (!sb){
+    s.innerHTML = `<h2>Falta configurar</h2>
+      <p>Abre <b>index.html</b> y rellena <b>SUPABASE_URL</b> y <b>SUPABASE_ANON_KEY</b> en el bloque CONFIGURACIÓN. Después crea la tabla con el archivo <b>supabase.sql</b>.</p>`;
+    return;
+  }
+
+  // 1) Estoy publicando
+  if (publishing){
+    s.innerHTML = `<h2>Dejar mi plaza</h2>
+      <p>Arrastra el pin <b>P</b> (o toca el mapa) si no está justo donde está tu coche.</p>
+      <label>¿Cuándo sales?</label>
+      <div class="opts">${[0,5,10,15].map(m => `<div class="opt ${publishing.min===m?"on":""}" data-min="${m}">${m===0?"Ya":m+" min"}</div>`).join("")}</div>
+      <button class="btn green" id="pubOk">Publicar plaza</button>
+      <button class="btn ghost" id="pubCancel">Cancelar</button>
+      <div class="note">Es un aviso entre conductores, no una reserva oficial. Siempre gratis.</div>`;
+    s.querySelectorAll(".opt").forEach(o => o.onclick = () => { publishing.min = +o.dataset.min; render(); });
+    $("#pubOk").onclick = publicar; $("#pubCancel").onclick = cancelPublish;
+    return;
+  }
+
+  // 2) Yo dejo mi plaza
+  const mine = plazas.find(p => p.id === myPlazaId);
+  if (mine){
+    if (mine.status === "libre"){
+      s.innerHTML = `<span class="tag g">PUBLICADA</span>
+        <h2>Esperando a que alguien la aparte…</h2>
+        <p>${salidaTxt(mine)}. Te sonará el móvil cuando alguien la coja.</p>
+        <div class="row"><button class="btn ghost" id="mLeft">Ya me he ido</button><button class="btn red" id="mDel">Retirar</button></div>`;
+    } else {
+      const d = mine.taker_lat != null ? distM({lat:mine.taker_lat,lng:mine.taker_lng}, mine) : null;
+      s.innerHTML = `<span class="tag o">${mine.owner_left ? "HAS SALIDO" : "APARTADA"}</span>
+        <h2>${esc(mine.taker_name || "Alguien")} viene a por tu plaza</h2>
+        <div class="car">🚗 ${esc(carTxt(mine.taker_car)) || "Coche sin datos"}</div>
+        ${d!=null ? `<div class="big">${fmtDist(d)} <span style="font-size:16px;color:var(--muted)">· ~${etaMin(d)} min</span></div>` : `<p>Esperando su ubicación…</p>`}
+        ${mine.owner_left
+          ? `<p>Le hemos avisado de que ya está libre. Cuando aparque, se cerrará solo.</p><button class="btn ghost" id="mDel">Terminar</button>`
+          : `<p>Cuando llegue (o justo al salir), pulsa <b>Ya he salido</b>.</p>
+             <button class="btn orange" id="mLeft">Ya he salido</button><button class="btn red" id="mDel">Cancelar</button>`}`;
+    }
+    $("#mLeft") && ($("#mLeft").onclick = yaHeSalido);
+    $("#mDel") && ($("#mDel").onclick = borrarMiPlaza);
+    return;
+  }
+
+  // 3) Yo voy a por una plaza
+  const take = plazas.find(p => p.id === myTakeId);
+  if (take){
+    const d = pos ? distM(pos, take) : null;
+    s.innerHTML = `<span class="tag o">APARTADA PARA TI</span>
+      <h2>Plaza de ${esc(take.owner_name || "un conductor")}</h2>
+      <div class="car">Busca este coche: <b>${esc(carTxt(take.owner_car)) || "sin datos"}</b></div>
+      ${d!=null ? `<div class="big">${fmtDist(d)} <span style="font-size:16px;color:var(--muted)">· ~${etaMin(d)} min</span></div>` : ""}
+      <p><b style="color:${take.owner_left?"var(--green)":"var(--orange)"}">${salidaTxt(take)}</b></p>
+      <a class="btn" style="text-align:center;text-decoration:none" target="_blank" rel="noopener"
+         href="https://www.google.com/maps/dir/?api=1&destination=${take.lat},${take.lng}&travelmode=driving">🧭 Cómo llegar</a>
+      <div class="row"><button class="btn green" id="tPark">He aparcado</button><button class="btn red" id="tDrop">Ya no la quiero</button></div>`;
+    $("#tPark").onclick = heAparcado; $("#tDrop").onclick = soltarReserva;
+    return;
+  }
+
+  // 4) Detalle de una plaza tocada
+  const sel = plazas.find(p => p.id === selected && p.status === "libre");
+  if (sel){
+    const d = pos ? distM(pos, sel) : null;
+    s.innerHTML = `<span class="tag g">LIBRE</span>
+      <h2>Plaza de ${esc(sel.owner_name || "un conductor")}</h2>
+      <p>${salidaTxt(sel)}${d!=null ? " · a " + fmtDist(d) + " (~" + etaMin(d) + " min)" : ""}</p>
+      <div class="car">Coche que sale: <b>${esc(carTxt(sel.owner_car)) || "sin datos"}</b>${sel.owner_car?.tamano ? " · tamaño " + esc(sel.owner_car.tamano) : ""}</div>
+      <button class="btn green" id="sTake">La quiero</button>
+      <button class="btn ghost" id="sBack">Volver</button>`;
+    $("#sTake").onclick = () => apartar(sel); $("#sBack").onclick = () => { selected = null; render(); };
+    return;
+  }
+
+  // 5) Inicio
+  const libres = plazas.filter(p => p.status === "libre" && p.owner_id !== me.id)
+    .map(p => ({ p, d: pos ? distM(pos, p) : null }))
+    .filter(x => x.d == null || x.d <= CONFIG.RADIO_KM*1000)
+    .sort((a,b) => (a.d??0) - (b.d??0));
+  s.innerHTML = `
+    ${manualPos ? `<p>📍 Sin GPS: toca el mapa para marcar dónde estás.</p>` : (!pos ? `<p>Buscando tu ubicación…</p>` : "")}
+    <button class="btn green" id="goPub">🚗 Me voy · dejo mi plaza</button>
+    <h2 style="margin-top:16px">Plazas cerca (${libres.length})</h2>
+    ${libres.length ? libres.map(({p,d}) => `
+      <div class="item" data-id="${p.id}">
+        <div class="pin">P</div>
+        <div style="flex:1"><div class="t">${d!=null ? fmtDist(d) : "—"} · ${esc(salidaTxt(p))}</div>
+        <div class="s">${esc(carTxt(p.owner_car)) || "Coche sin datos"}</div></div>
+      </div>`).join("") : `<p>Ahora mismo nadie está dejando plaza por aquí. Cuando alguien publique una, aparecerá en verde.</p>`}`;
+  $("#goPub").onclick = startPublish;
+  s.querySelectorAll(".item").forEach(it => it.onclick = () => {
+    selected = it.dataset.id; const p = plazas.find(x => x.id === selected);
+    if (p) map.setView([p.lat, p.lng], 17); render();
+  });
+}
+
+/* ---------- Perfil ---------- */
+function showProfile(first){
+  const o = $("#overlay"), c = me?.car || {};
+  o.innerHTML = `<div class="logo" style="font-size:28px">Relevo<span>·</span></div>
+    <p style="color:var(--muted)">${first ? "Pasa tu plaza de la calle a otro conductor, sin dar vueltas. Antes de empezar, dinos cómo es tu coche para que te reconozcan." : "Tus datos"}</p>
+    <label>Tu nombre o apodo</label><input id="fName" maxlength="20" value="${esc(me?.name||"")}">
+    <label>Modelo del coche</label><input id="fModelo" maxlength="30" placeholder="Ej: SEAT León" value="${esc(c.modelo||"")}">
+    <label>Color</label><input id="fColor" maxlength="20" placeholder="Ej: Rojo" value="${esc(c.color||"")}">
+    <label>Matrícula (opcional, ayuda a reconocerlo)</label><input id="fMat" maxlength="10" placeholder="1234ABC" value="${esc(c.matricula||"")}">
+    <label>Tamaño</label>
+    <select id="fTam">${["Pequeño","Mediano","Grande","Furgoneta"].map(t => `<option ${c.tamano===t?"selected":""}>${t}</option>`).join("")}</select>
+    <button class="btn green" id="fSave">Guardar</button>
+    ${first ? "" : `<button class="btn ghost" id="fClose">Cerrar</button>`}
+    <div class="note">Tu ubicación solo se comparte mientras tienes una plaza publicada o apartada, y se borra al terminar. Relevo es un acuerdo entre conductores: no es una reserva oficial y no se cobra nada.</div>`;
+  o.style.display = "block";
+  $("#fSave").onclick = () => {
+    const name = $("#fName").value.trim();
+    if (!name){ toast("Pon al menos tu nombre"); return; }
+    me = { id: me?.id || crypto.randomUUID(), name,
+      car: { modelo: $("#fModelo").value.trim(), color: $("#fColor").value.trim(),
+             matricula: $("#fMat").value.trim().toUpperCase(), tamano: $("#fTam").value } };
+    store.set("me", me); o.style.display = "none"; render();
+  };
+  $("#fClose") && ($("#fClose").onclick = () => o.style.display = "none");
+}
+$("#profileChip").onclick = () => showProfile(false);
+
+/* ---------- Arranque ---------- */
+function init(){
+  if (CONFIG.SUPABASE_URL && CONFIG.SUPABASE_ANON_KEY && window.supabase){
+    sb = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+  }
+  if (!me) showProfile(true);
+  startGPS();
+  render();
+  if (sb){
+    loadPlazas();
+    pollTimer = setInterval(() => { if (!document.hidden) loadPlazas(); }, CONFIG.POLL_MS);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) loadPlazas(); });
+  }
+  setInterval(render, 30000); // refresca los "sale en X min"
+}
+init();
+</script>
+</body>
+</html>
