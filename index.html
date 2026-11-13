@@ -94,6 +94,8 @@ const CONFIG = {
   SUPABASE_ANON_KEY: "sb_publishable_0_pkVL7_8ItwZ7U2qu9kOA_38M_WNnt",  // clave pública (publishable)
   POLL_MS: 4000,          // cada cuánto se actualiza
   RADIO_KM: 3,            // plazas que se muestran alrededor
+  ZONA_KM: 1,             // radio de la zona cuando buscas plaza
+  MARGEN_MIN: 5,          // margen de hora al buscar (± minutos)
   CADUCA_MIN: 60          // una plaza publicada caduca a los 60 min
 };
 /* ====================================== */
@@ -115,6 +117,9 @@ let plazas = [];
 let myPlazaId = store.get("myPlaza", null);   // plaza que yo dejo
 let myTakeId  = store.get("myTake", null);    // plaza que yo he apartado
 let carPos    = store.get("carPos", null);    // dónde aparqué mi coche {lat,lng,at}
+let busqueda  = store.get("busqueda", null);  // filtro activo {lat,lng,at(ISO)}
+let buscando  = null;      // editando búsqueda {lat,lng,hora}
+let searchMarker = null;
 let selected = null;       // plaza tocada en el mapa
 let publishing = null;     // {min, hora, lat, lng}
 let lastStatus = {};       // para detectar cambios y avisar
@@ -132,6 +137,7 @@ let pubMarker = null;
 let centered = false;
 
 map.on("click", e => {
+  if (buscando && searchMarker) { searchMarker.setLatLng(e.latlng); buscando.lat = e.latlng.lat; buscando.lng = e.latlng.lng; return; }
   if (publishing && pubMarker) { pubMarker.setLatLng(e.latlng); publishing.lat = e.latlng.lat; publishing.lng = e.latlng.lng; return; }
   if (manualPos) { setPos(e.latlng.lat, e.latlng.lng, 5); toast("Posición fijada a mano"); }
 });
@@ -219,7 +225,7 @@ async function loadPlazas(){
   if (myTakeId){
     const t = plazas.find(p => p.id === myTakeId);
     if (!t){ myTakeId = null; store.del("myTake"); toast("La plaza que ibas a coger ya no está disponible."); beep(); }
-    else if (t.taker_id !== me.id){ myTakeId = null; store.del("myTake"); toast("El conductor ha liberado la reserva."); }
+    else if (t.taker_id !== me?.id){ myTakeId = null; store.del("myTake"); toast("El conductor ha liberado la reserva."); }
   }
   notifyChanges();
   render();
@@ -254,7 +260,8 @@ async function pushMyPosition(){
 
 function salidaDate(){
   if (publishing.min !== "hora") return new Date(Date.now() + publishing.min*60000);
-  const [h, mm] = (publishing.hora || "").split(":").map(Number);
+  if (!publishing.hora) return null;
+  const [h, mm] = publishing.hora.split(":").map(Number);
   if (isNaN(h)) return null;
   const d = new Date(); d.setHours(h, mm, 0, 0);
   if (d < Date.now() - 5*60000) d.setDate(d.getDate() + 1);   // hora ya pasada → mañana
@@ -325,7 +332,7 @@ function guardarCoche(lat, lng){
 function heAparcadoAqui(){
   if (!pos){ toast(manualPos ? "Primero toca el mapa para marcar dónde estás." : "Esperando al GPS…"); return; }
   guardarCoche(pos.lat, pos.lng);
-  toast("📍 Guardado dónde has aparcado"); render();
+  toast("📍 Guardado dónde has aparcado. ¿A qué hora sales?"); startPublish(); if (publishing){ publishing.min = "hora"; render(); }
 }
 function olvidarCoche(){ carPos = null; store.del("carPos"); }
 function startPublish(){
@@ -343,6 +350,43 @@ function cancelPublish(){
   render();
 }
 
+/* ---------- Buscar plaza (zona + hora) ---------- */
+function horaADate(hhmm){
+  if (!hhmm) return null;
+  const [h, mm] = hhmm.split(":").map(Number);
+  if (isNaN(h)) return null;
+  const d = new Date(); d.setHours(h, mm, 0, 0);
+  if (d < Date.now() - 30*60000) d.setDate(d.getDate() + 1);
+  return d;
+}
+function startSearch(){
+  const base = busqueda || pos;
+  if (!base){ toast(manualPos ? "Primero toca el mapa para marcar dónde estás." : "Esperando al GPS…"); return; }
+  const h = busqueda ? new Date(busqueda.at) : new Date(Date.now() + 15*60000);
+  buscando = { lat: base.lat, lng: base.lng, hora: h.toTimeString().slice(0,5) };
+  searchMarker = L.marker([base.lat, base.lng], { draggable:true, icon: pMarker("#3d8bfd","🔍") }).addTo(map);
+  searchMarker.on("dragend", e => { const ll = e.target.getLatLng(); buscando.lat = ll.lat; buscando.lng = ll.lng; });
+  map.setView([base.lat, base.lng], 15);
+  render();
+}
+function endSearchEdit(){
+  buscando = null;
+  if (searchMarker){ map.removeLayer(searchMarker); searchMarker = null; }
+  render();
+}
+function aplicarBusqueda(){
+  const d = horaADate(buscando.hora);
+  if (!d){ toast("Elige a qué hora necesitas aparcar"); return; }
+  busqueda = { lat: buscando.lat, lng: buscando.lng, at: d.toISOString() }; store.set("busqueda", busqueda);
+  endSearchEdit();
+}
+function quitarBusqueda(){ busqueda = null; store.del("busqueda"); render(); }
+function encaja(p){   // ¿la plaza encaja con la búsqueda activa?
+  if (!busqueda) return true;
+  if (distM(busqueda, p) > CONFIG.ZONA_KM*1000) return false;
+  return Math.abs(new Date(p.leave_at) - new Date(busqueda.at)) <= CONFIG.MARGEN_MIN*60000;
+}
+
 /* ---------- Pintar ---------- */
 function drawMap(){
   layer.clearLayers();
@@ -350,7 +394,8 @@ function drawMap(){
   plazas.forEach(p => {
     const mine = p.id === myPlazaId, taking = p.id === myTakeId;
     if (!mine && !taking && p.status !== "libre") return;
-    if (!mine && !taking && pos && distM(pos, p) > CONFIG.RADIO_KM*1000) return;
+    if (!mine && !taking && busqueda && !encaja(p)) return;
+    if (!mine && !taking && !busqueda && pos && distM(pos, p) > CONFIG.RADIO_KM*1000) return;
     const color = mine ? "#c8865a" : taking ? "#f39c12" : "#2ecc71";
     const m = L.marker([p.lat, p.lng], { icon: pMarker(color, "P") }).addTo(layer);
     if (!mine && !taking) m.on("click", () => { selected = p.id; render(); });
@@ -372,6 +417,20 @@ function render(){
   if (!sb){
     s.innerHTML = `<h2>Falta configurar</h2>
       <p>Abre <b>index.html</b> y rellena <b>SUPABASE_URL</b> y <b>SUPABASE_ANON_KEY</b> en el bloque CONFIGURACIÓN. Después crea la tabla con el archivo <b>supabase.sql</b>.</p>`;
+    return;
+  }
+
+  // 0) Estoy eligiendo zona y hora para buscar
+  if (buscando){
+    s.innerHTML = `<h2>Busco plaza</h2>
+      <p>Mueve el pin <b>🔍</b> (o toca el mapa) a la zona donde quieres aparcar.</p>
+      <label>¿A qué hora necesitas aparcar?</label>
+      <input type="time" id="bHora" value="${esc(buscando.hora)}">
+      <p class="note" style="margin-top:6px">Verás los coches que salen a ${CONFIG.ZONA_KM} km o menos de ese punto, entre ${CONFIG.MARGEN_MIN} min antes y ${CONFIG.MARGEN_MIN} min después de esa hora.</p>
+      <button class="btn green" id="bOk">Buscar</button>
+      <button class="btn ghost" id="bCancel">Cancelar</button>`;
+    $("#bHora").oninput = e => buscando.hora = e.target.value;
+    $("#bOk").onclick = aplicarBusqueda; $("#bCancel").onclick = endSearchEdit;
     return;
   }
 
@@ -454,25 +513,33 @@ function render(){
   }
 
   // 5) Inicio
-  const libres = plazas.filter(p => p.status === "libre" && p.owner_id !== me.id)
-    .map(p => ({ p, d: pos ? distM(pos, p) : null }))
-    .filter(x => x.d == null || x.d <= CONFIG.RADIO_KM*1000)
-    .sort((a,b) => (a.d??0) - (b.d??0));
+  const ref = busqueda || pos;
+  const libres = plazas.filter(p => p.status === "libre" && p.owner_id !== me?.id)
+    .filter(encaja)
+    .map(p => ({ p, d: ref ? distM(ref, p) : null }))
+    .filter(x => busqueda || x.d == null || x.d <= CONFIG.RADIO_KM*1000)
+    .sort((a,b) => busqueda ? (new Date(a.p.leave_at) - new Date(b.p.leave_at)) : ((a.d??0) - (b.d??0)));
   s.innerHTML = `
     ${manualPos ? `<p>📍 Sin GPS: toca el mapa para marcar dónde estás.</p>` : (!pos ? `<p>Buscando tu ubicación…</p>` : "")}
     ${carPos
       ? `<div class="car">🚗 Tu coche: aparcado a las <b>${horaTxt(carPos.at)}</b>${pos ? " · a " + fmtDist(distM(pos, carPos)) : ""}
            <div class="row" style="margin-top:6px"><button class="btn ghost" id="goCar" style="margin-top:0;padding:10px">Ver en mapa</button><button class="btn ghost" id="carForget" style="margin-top:0;padding:10px">Olvidar</button></div></div>`
       : `<button class="btn" id="goPark">📍 He aparcado aquí</button>`}
-    <button class="btn green" id="goPub">🚗 Me voy · dejo mi plaza</button>
-    <h2 style="margin-top:16px">Plazas cerca (${libres.length})</h2>
+    <div class="row"><button class="btn green" id="goPub">🚗 Dejo mi plaza</button><button class="btn" id="goSearch">🔍 Busco plaza</button></div>
+    ${busqueda
+      ? `<h2 style="margin-top:16px">Salen a las ${horaTxt(busqueda.at)} ±${CONFIG.MARGEN_MIN} min (${libres.length})</h2>
+         <p>En la zona que elegiste (${CONFIG.ZONA_KM} km). <a href="#" id="bEdit" style="color:var(--blue)">Cambiar</a> · <a href="#" id="bClear" style="color:var(--blue)">Ver todas</a></p>`
+      : `<h2 style="margin-top:16px">Plazas cerca (${libres.length})</h2>`}
     ${libres.length ? libres.map(({p,d}) => `
       <div class="item" data-id="${p.id}">
         <div class="pin">P</div>
         <div style="flex:1"><div class="t">${d!=null ? fmtDist(d) : "—"} · ${esc(salidaTxt(p))}</div>
         <div class="s">${esc(carTxt(p.owner_car)) || "Coche sin datos"}</div></div>
-      </div>`).join("") : `<p>Ahora mismo nadie está dejando plaza por aquí. Cuando alguien publique una, aparecerá en verde.</p>`}`;
+      </div>`).join("") : (busqueda ? `<p>Nadie sale a esa hora en esa zona todavía. Déjalo abierto: si alguien publica una plaza que encaje, aparecerá aquí.</p>` : `<p>Ahora mismo nadie está dejando plaza por aquí. Cuando alguien publique una, aparecerá en verde.</p>`)}`;
   $("#goPub").onclick = startPublish;
+  $("#goSearch").onclick = startSearch;
+  $("#bEdit") && ($("#bEdit").onclick = e => { e.preventDefault(); startSearch(); });
+  $("#bClear") && ($("#bClear").onclick = e => { e.preventDefault(); quitarBusqueda(); });
   $("#goPark") && ($("#goPark").onclick = heAparcadoAqui);
   $("#goCar") && ($("#goCar").onclick = () => map.setView([carPos.lat, carPos.lng], 18));
   $("#carForget") && ($("#carForget").onclick = () => { olvidarCoche(); render(); });
