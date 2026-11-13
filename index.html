@@ -170,7 +170,7 @@ let pubMarker = null;
 let centered = false;
 
 map.on("click", e => {
-  if (buscando && searchMarker) { moverBusqueda(e.latlng); toast("📍 Zona marcada"); return; }
+  if (buscando && searchMarker) { moverBusqueda(e.latlng); toast("📍 Zona marcada"); mostrarGuardar(""); return; }
   if (publishing && pubMarker) { moverPin(e.latlng); return; }
   if (manualPos) { setPos(e.latlng.lat, e.latlng.lng, 5); toast("Posición fijada a mano"); }
 });
@@ -590,9 +590,40 @@ async function buscarSitio(q){
       const d = data[+el.dataset.i], ll = { lat: +d.lat, lng: +d.lon };
       moverBusqueda(ll); map.setView([ll.lat, ll.lng], 15);
       out.innerHTML = ""; $("#geoQ").value = el.querySelector("b").textContent; $("#geoQ").blur();
+      mostrarGuardar(el.querySelector("b").textContent);
       toast("📍 Zona marcada: " + el.querySelector("b").textContent);
     });
   }catch(e){ console.warn(e); out.innerHTML = `<p class="note">No se pudo buscar. Revisa la conexión.</p>`; }
+}
+/* Casa y trabajo guardados en el móvil */
+let sitios = store.get("sitios", {});   // { casa:{lat,lng,nombre}, trabajo:{...} }
+const SITIOS = { casa: "🏠 Casa", trabajo: "💼 Trabajo" };
+function sitiosHTML(){
+  return `<div class="quick" id="sitiosQ">${Object.entries(SITIOS).map(([k, t]) =>
+    `<span data-k="${k}" style="${sitios[k] ? "border-color:var(--green)" : "opacity:.75"}">${t}${sitios[k] ? "" : " (sin guardar)"}</span>`).join("")}</div>
+    <div id="guardarSitio" class="note" style="margin-top:0"></div>`;
+}
+function bindSitios(){
+  $("#sitiosQ").querySelectorAll("span").forEach(b => b.onclick = () => {
+    const st = sitios[b.dataset.k];
+    if (!st){ toast(`Busca la dirección o toca el mapa, y luego pulsa "Guardar como ${SITIOS[b.dataset.k]}".`, 6000); mostrarGuardar(); return; }
+    moverBusqueda(st); map.setView([st.lat, st.lng], 15);
+    $("#geoQ").value = st.nombre || ""; toast("📍 Zona: " + SITIOS[b.dataset.k]);
+  });
+  mostrarGuardar();
+}
+function mostrarGuardar(nombre){
+  const g = $("#guardarSitio"); if (!g) return;
+  if (nombre !== undefined) buscando.nombre = nombre;
+  g.innerHTML = `Guardar esta zona como: ${Object.entries(SITIOS).map(([k, t]) => `<a href="#" data-k="${k}" style="color:var(--blue);font-weight:700">${t}</a>`).join(" · ")}`;
+  g.querySelectorAll("a").forEach(a => a.onclick = e => {
+    e.preventDefault();
+    sitios[a.dataset.k] = { lat: buscando.lat, lng: buscando.lng, nombre: buscando.nombre || ($("#geoQ").value || "").trim() };
+    store.set("sitios", sitios);
+    toast(`✅ Guardado como ${SITIOS[a.dataset.k]}`);
+    $("#sitiosQ").outerHTML = sitiosHTML().split('<div id="guardarSitio"')[0];
+    bindSitios();
+  });
 }
 let searchCircle = null;
 function moverBusqueda(ll){
@@ -669,6 +700,7 @@ function render(force){
   if (buscando){
     s.innerHTML = `<h2>Busco plaza</h2>
       <label>¿Dónde quieres aparcar?</label>
+      ${sitiosHTML()}
       <div class="geo"><input id="geoQ" enterkeyhint="search" placeholder="Población o dirección (ej: Martorell)"><button id="geoBtn">🔎</button></div>
       <div class="geoRes" id="geoRes"></div>
       <p class="note" style="margin-top:6px">O <b>toca el mapa</b> en el sitio exacto. El círculo azul es la zona donde buscaremos.</p>
@@ -679,6 +711,7 @@ function render(force){
       <button class="btn ghost" id="bCancel">Cancelar</button>`;
     bindTimeBox("bHora", () => buscando.hora, v => buscando.hora = v);
     $("#geoBtn").onclick = () => buscarSitio($("#geoQ").value);
+    bindSitios();
     $("#geoQ").onkeydown = e => { if (e.key === "Enter") buscarSitio(e.target.value); };
     $("#bOk").onclick = aplicarBusqueda; $("#bCancel").onclick = endSearchEdit;
     return;
