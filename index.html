@@ -5,7 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f1b2d">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Relevo · Pasa tu plaza</title>
+<title>Appark · Pasa tu plaza</title>
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-title" content="Appark">
+<meta name="application-name" content="Appark">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
   :root{
@@ -87,7 +93,7 @@
 <body>
 <div id="map"></div>
 <header>
-  <div class="logo">Relevo<span>·</span></div>
+  <div class="logo">Appark<span>·</span></div>
   <div class="chip" id="profileChip">Mi coche</div>
 </header>
 <div id="toast"></div>
@@ -690,7 +696,7 @@ function render(){
 /* ---------- Perfil ---------- */
 function showProfile(first){
   const o = $("#overlay"), c = me?.car || {};
-  o.innerHTML = `<div class="logo" style="font-size:28px">Relevo<span>·</span></div>
+  o.innerHTML = `<div class="logo" style="font-size:28px">Appark<span>·</span></div>
     <p style="color:var(--muted)">${first ? "Pasa tu plaza de la calle a otro conductor, sin dar vueltas. Antes de empezar, dinos cómo es tu coche para que te reconozcan." : "Tus datos"}</p>
     <label>Tu nombre o apodo</label><input id="fName" maxlength="20" value="${esc(me?.name||"")}">
     <label>Modelo del coche</label><input id="fModelo" maxlength="30" placeholder="Ej: SEAT León" value="${esc(c.modelo||"")}">
@@ -700,7 +706,7 @@ function showProfile(first){
     <select id="fTam">${["Pequeño","Mediano","Grande","Furgoneta"].map(t => `<option ${c.tamano===t?"selected":""}>${t}</option>`).join("")}</select>
     <button class="btn green" id="fSave">Guardar</button>
     ${first ? "" : `<button class="btn ghost" id="fClose">Cerrar</button>`}
-    <div class="note">Tu ubicación solo se comparte mientras tienes una plaza publicada o apartada, y se borra al terminar. Relevo es un acuerdo entre conductores: no es una reserva oficial y no se cobra nada.</div>`;
+    <div class="note">Tu ubicación solo se comparte mientras tienes una plaza publicada o apartada, y se borra al terminar. Appark es un acuerdo entre conductores: no es una reserva oficial y no se cobra nada.</div>`;
   o.style.display = "block";
   $("#fSave").onclick = () => {
     const name = $("#fName").value.trim();
