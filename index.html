@@ -364,9 +364,16 @@ async function noHabiaPlaza(){
   if (!myTakeId) return;
   if (!confirmar){ confirmar = true; render(); return; }
   confirmar = false;
-  await sb.rpc("relevo_denunciar", { p_plaza: myTakeId, p_user: me.id });
+  if (!pos || manualPos){ toast("Necesitamos tu GPS para comprobar que estás en el sitio."); return; }
+  const { data, error } = await sb.rpc("relevo_denunciar", { p_plaza: myTakeId, p_user: me.id, p_lat: pos.lat, p_lng: pos.lng });
+  if (error){ toast("Error: " + error.message); return; }
+  if (data === "lejos" || data === "sin_gps"){ toast("Solo puedes avisar cuando estés junto a la plaza (a menos de 150 m).", 6000); render(); return; }
+  if (data === "no"){ loadPlazas(); return; }
   myTakeId = null; store.del("myTake");
-  toast(`Lo sentimos. Te devolvemos tus ${CONFIG.COSTE} puntos y avisamos al otro conductor.`, 6000); loadPlazas();
+  toast(data === "disputa"
+    ? `El otro conductor dijo que ya había salido. Te devolvemos tus ${CONFIG.COSTE} puntos; nadie pierde puntos.`
+    : `Lo sentimos. Te devolvemos tus ${CONFIG.COSTE} puntos.`, 7000);
+  loadPlazas();
 }
 async function yaHeSalido(){
   if (!myPlazaId) return;
@@ -616,7 +623,7 @@ function render(){
          href="https://www.google.com/maps/dir/?api=1&destination=${take.lat},${take.lng}&travelmode=driving">🧭 Cómo llegar</a>
       <div class="row"><button class="btn green" id="tPark">He aparcado</button><button class="btn red" id="tDrop">Ya no la quiero</button></div>
       ${confirmar
-        ? `<div class="car" style="border-color:var(--red)">¿Seguro que <b>no había plaza</b>? Al otro conductor se le quitarán 10 puntos.
+        ? `<div class="car" style="border-color:var(--red)">¿Seguro que <b>no había plaza</b>? Comprobaremos con tu GPS que estás junto a ella. Si es verdad, al otro conductor se le quitarán 10 puntos.
              <div class="row"><button class="btn red" id="tFake">Sí, no había</button><button class="btn ghost" id="tFakeNo">No, me he equivocado</button></div></div>`
         : `<button class="btn ghost" id="tFake">🚫 He llegado y no había plaza</button>`}
       ${chatHTML(false)}`;
